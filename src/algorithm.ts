@@ -42,6 +42,10 @@ function countProf(group: Character[], prof: Profession): number {
   return group.filter(c => c.profession === prof).length;
 }
 
+function noOwnerIn(group: Character[], owner: string): boolean {
+  return !group.some(c => c.owner === owner);
+}
+
 function fixConstraints(groups: Character[][], maxGroupSize: number): void {
   // 1. Remove excess Tropiciele (max 2 per group)
   for (let i = 0; i < groups.length; i++) {
@@ -49,7 +53,10 @@ function fixConstraints(groups: Character[][], maxGroupSize: number): void {
     for (let extra = 2; extra < trops.length; extra++) {
       const exc = trops[extra];
       const dst = groups.findIndex((g, idx) =>
-        idx !== i && countProf(g, 'Tropiciel') < 2 && g.length < maxGroupSize,
+        idx !== i &&
+        countProf(g, 'Tropiciel') < 2 &&
+        g.length < maxGroupSize &&
+        noOwnerIn(g, exc.owner),
       );
       if (dst >= 0) {
         groups[i] = groups[i].filter(c => c.id !== exc.id);
@@ -63,7 +70,10 @@ function fixConstraints(groups: Character[][], maxGroupSize: number): void {
     for (let extra = 2; extra < lowcy.length; extra++) {
       const exc = lowcy[extra];
       const dst = groups.findIndex((g, idx) =>
-        idx !== i && countProf(g, 'Łowca') < 2 && g.length < maxGroupSize,
+        idx !== i &&
+        countProf(g, 'Łowca') < 2 &&
+        g.length < maxGroupSize &&
+        noOwnerIn(g, exc.owner),
       );
       if (dst >= 0) {
         groups[i] = groups[i].filter(c => c.id !== exc.id);
@@ -74,17 +84,26 @@ function fixConstraints(groups: Character[][], maxGroupSize: number): void {
   // 3. Ensure ≥1 Tropiciel per non-empty group
   for (let i = 0; i < groups.length; i++) {
     if (!groups[i].length || countProf(groups[i], 'Tropiciel') > 0) continue;
+    // Find a donor group with ≥2 Tropiciele whose Tropiciel won't conflict in group i
     const donor = groups.findIndex((g, idx) =>
-      idx !== i && countProf(g, 'Tropiciel') >= 2,
+      idx !== i &&
+      countProf(g, 'Tropiciel') >= 2 &&
+      g.some(c => c.profession === 'Tropiciel' && noOwnerIn(groups[i], c.owner)),
     );
     if (donor < 0) continue;
-    const trop = groups[donor].find(c => c.profession === 'Tropiciel')!;
+    const trop = groups[donor].find(
+      c => c.profession === 'Tropiciel' && noOwnerIn(groups[i], c.owner),
+    )!;
     if (groups[i].length < maxGroupSize) {
       groups[donor] = groups[donor].filter(c => c.id !== trop.id);
       groups[i].push(trop);
     } else {
       const swap = groups[i].find(
-        c => c.profession !== 'Tropiciel' && c.profession !== 'Mag' && c.profession !== 'Paladyn',
+        c =>
+          c.profession !== 'Tropiciel' &&
+          c.profession !== 'Mag' &&
+          c.profession !== 'Paladyn' &&
+          noOwnerIn(groups[donor], c.owner),
       );
       if (
         swap &&
@@ -104,16 +123,32 @@ function fixConstraints(groups: Character[][], maxGroupSize: number): void {
     if (!groups[i].length || hasMagPal) continue;
     const donor = groups.findIndex((g, idx) => {
       const cnt = g.filter(c => c.profession === 'Mag' || c.profession === 'Paladyn').length;
-      return idx !== i && cnt >= 2;
+      return (
+        idx !== i &&
+        cnt >= 2 &&
+        g.some(
+          c =>
+            (c.profession === 'Mag' || c.profession === 'Paladyn') &&
+            noOwnerIn(groups[i], c.owner),
+        )
+      );
     });
     if (donor < 0) continue;
-    const magPal = groups[donor].find(c => c.profession === 'Mag' || c.profession === 'Paladyn')!;
+    const magPal = groups[donor].find(
+      c =>
+        (c.profession === 'Mag' || c.profession === 'Paladyn') &&
+        noOwnerIn(groups[i], c.owner),
+    )!;
     if (groups[i].length < maxGroupSize) {
       groups[donor] = groups[donor].filter(c => c.id !== magPal.id);
       groups[i].push(magPal);
     } else {
       const swap = groups[i].find(
-        c => c.profession !== 'Tropiciel' && c.profession !== 'Mag' && c.profession !== 'Paladyn',
+        c =>
+          c.profession !== 'Tropiciel' &&
+          c.profession !== 'Mag' &&
+          c.profession !== 'Paladyn' &&
+          noOwnerIn(groups[donor], c.owner),
       );
       if (
         swap &&
@@ -135,23 +170,32 @@ function fixConstraints(groups: Character[][], maxGroupSize: number): void {
     if (!groups[i].length || hasTank) continue;
     const donor = groups.findIndex((g, idx) => {
       const cnt = g.filter(c => c.profession === 'Wojownik' || c.profession === 'Paladyn').length;
-      return idx !== i && cnt >= 2;
+      return (
+        idx !== i &&
+        cnt >= 2 &&
+        g.some(
+          c =>
+            (c.profession === 'Wojownik' || c.profession === 'Paladyn') &&
+            noOwnerIn(groups[i], c.owner),
+        )
+      );
     });
     if (donor < 0) continue;
     const tankToMove =
-      groups[donor].find(c => c.profession === 'Paladyn') ??
-      groups[donor].find(c => c.profession === 'Wojownik')!;
-    if (
-      groups[i].length < maxGroupSize &&
-      !groups[i].some(c => c.owner === tankToMove.owner)
-    ) {
+      groups[donor].find(c => c.profession === 'Paladyn' && noOwnerIn(groups[i], c.owner)) ??
+      groups[donor].find(c => c.profession === 'Wojownik' && noOwnerIn(groups[i], c.owner));
+    if (tankToMove && groups[i].length < maxGroupSize) {
       groups[donor] = groups[donor].filter(c => c.id !== tankToMove.id);
       groups[i].push(tankToMove);
     }
   }
 }
 
-function fixOwnerConflicts(groups: Character[][], maxGroupSize: number): void {
+// Returns characters that could not be placed anywhere without creating a conflict.
+// These must be added to unplaced lists by the caller.
+function fixOwnerConflicts(groups: Character[][], maxGroupSize: number): Character[] {
+  const ejected: Character[] = [];
+
   for (let i = 0; i < groups.length; i++) {
     const byOwner: Record<string, Character[]> = {};
     for (const c of groups[i]) {
@@ -160,9 +204,10 @@ function fixOwnerConflicts(groups: Character[][], maxGroupSize: number): void {
     for (const owner of Object.keys(byOwner)) {
       const extras = byOwner[owner].slice(1);
       for (const charToMove of extras) {
+        // 1. Move to a group with space and no same owner
         const dst = groups.findIndex((g, idx) =>
           idx !== i &&
-          !g.some(c => c.owner === owner) &&
+          noOwnerIn(g, owner) &&
           g.length < maxGroupSize,
         );
         if (dst >= 0) {
@@ -170,15 +215,16 @@ function fixOwnerConflicts(groups: Character[][], maxGroupSize: number): void {
           groups[dst].push(charToMove);
           continue;
         }
+        // 2. Swap with a character from another group
         let swapped = false;
         for (let j = 0; j < groups.length && !swapped; j++) {
           if (j === i || groups[j].some(c => c.owner === owner)) continue;
-          const swapCandidate = groups[j].find(c => {
-            const ownersInI = groups[i]
-              .filter(x => x.id !== charToMove.id)
-              .map(x => x.owner);
-            return !ownersInI.includes(c.owner);
-          });
+          const ownersInIAfterRemoval = groups[i]
+            .filter(x => x.id !== charToMove.id)
+            .map(x => x.owner);
+          const swapCandidate = groups[j].find(
+            c => !ownersInIAfterRemoval.includes(c.owner),
+          );
           if (swapCandidate) {
             groups[i] = groups[i].filter(c => c.id !== charToMove.id);
             groups[j] = groups[j].filter(c => c.id !== swapCandidate.id);
@@ -187,9 +233,16 @@ function fixOwnerConflicts(groups: Character[][], maxGroupSize: number): void {
             swapped = true;
           }
         }
+        if (!swapped) {
+          // Hard constraint: eject rather than leave a conflict
+          groups[i] = groups[i].filter(c => c.id !== charToMove.id);
+          ejected.push(charToMove);
+        }
       }
     }
   }
+
+  return ejected;
 }
 
 export function generateGroups(
@@ -230,11 +283,14 @@ export function generateGroups(
     groups[pos].push(sorted[i]);
   }
 
-  fixOwnerConflicts(groups, maxGroupSize);
+  const ejected1 = fixOwnerConflicts(groups, maxGroupSize);
   fixConstraints(groups, maxGroupSize);
   fixConstraints(groups, maxGroupSize);
   fixConstraints(groups, maxGroupSize);
-  fixOwnerConflicts(groups, maxGroupSize);
+  const ejected2 = fixOwnerConflicts(groups, maxGroupSize);
+
+  // Collect all characters ejected due to unresolvable owner conflicts
+  const allEjected = [...ejected1, ...ejected2];
 
   const unplacedOptional: Character[] = [];
   const sortedExtra = [...extraChars].sort(
@@ -291,7 +347,10 @@ export function generateGroups(
   }
 
   const validGroups: GroupResult[] = [];
-  const unplacedRequired: Character[] = [];
+  const unplacedRequired: Character[] = [
+    ...allEjected.filter(c => c.availableFights === 1),
+  ];
+  unplacedOptional.push(...allEjected.filter(c => c.availableFights > 1));
 
   for (const group of groups) {
     if (group.length >= minGroupSize) {

@@ -452,12 +452,12 @@ export default function App() {
                             </Row>
 
                             {group.ownerConflicts.length > 0 && (
-                              <Callout tone="danger" title="Konflikt gracza — dwie postacie tego samego gracza w jednej grupie">
+                              <Callout tone="warning" title="Uwaga: nie udało się rozdzielić wszystkich postaci">
                                 {group.ownerConflicts.map(owner => {
                                   const chars = group.members.filter(c => c.owner === owner);
                                   return (
                                     <Text key={owner} size="small">
-                                      {owner}: {chars.map(c => c.characterName).join(', ')} — nie da się rozdzielić
+                                      {owner}: {chars.map(c => c.characterName).join(', ')} — za mało grup, by rozdzielić
                                     </Text>
                                   );
                                 })}
