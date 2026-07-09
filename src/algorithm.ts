@@ -181,13 +181,78 @@ function fixConstraints(groups: Character[][], maxGroupSize: number): void {
       );
     });
     if (donor < 0) continue;
-    const tankToMove =
-      groups[donor].find(c => c.profession === 'Paladyn' && noOwnerIn(groups[i], c.owner)) ??
-      groups[donor].find(c => c.profession === 'Wojownik' && noOwnerIn(groups[i], c.owner));
+    // Prefer Paladyn over Wojownik; within same class prefer lower level (boss scales lower)
+    const tankCandidates = groups[donor]
+      .filter(
+        c => (c.profession === 'Paladyn' || c.profession === 'Wojownik') &&
+          noOwnerIn(groups[i], c.owner),
+      )
+      .sort((a, b) => {
+        if (a.profession !== b.profession)
+          return a.profession === 'Paladyn' ? -1 : 1;
+        return a.level - b.level;
+      });
+    const tankToMove = tankCandidates[0];
     if (tankToMove && groups[i].length < maxGroupSize) {
       groups[donor] = groups[donor].filter(c => c.id !== tankToMove.id);
       groups[i].push(tankToMove);
     }
+  }
+}
+
+// After all constraint passes: swap characters between the strongest and weakest group
+// to narrow the quality gap, without breaking profession/owner hard constraints.
+function balanceGroups(groups: Character[][], targetLevel: number, maxGroupSize: number): void {
+  const score = (g: Character[]) => groupAvgScore(g, targetLevel, maxGroupSize);
+
+  for (let pass = 0; pass < 15; pass++) {
+    const scores = groups.map(score);
+    const maxScore = Math.max(...scores);
+    const minScore = Math.min(...scores);
+    if (maxScore - minScore < 0.04) break;
+
+    const topIdx = scores.indexOf(maxScore);
+    const botIdx = scores.indexOf(minScore);
+
+    let bestSwap: [Character, Character] | null = null;
+    let bestGain = 0.004;
+
+    for (const ci of groups[topIdx]) {
+      for (const cj of groups[botIdx]) {
+        if (groups[topIdx].some(c => c.id !== ci.id && c.owner === cj.owner)) continue;
+        if (groups[botIdx].some(c => c.id !== cj.id && c.owner === ci.owner)) continue;
+
+        const newTop = [...groups[topIdx].filter(c => c.id !== ci.id), cj];
+        const newBot = [...groups[botIdx].filter(c => c.id !== cj.id), ci];
+
+        if (cj.profession === 'Tropiciel' && countProf(newTop, 'Tropiciel') > 2) continue;
+        if (cj.profession === 'Łowca'     && countProf(newTop, 'Łowca')     > 2) continue;
+        if (ci.profession === 'Tropiciel' && countProf(newBot, 'Tropiciel') > 2) continue;
+        if (ci.profession === 'Łowca'     && countProf(newBot, 'Łowca')     > 2) continue;
+
+        // Don't leave the group without its mandatory Tropiciel or Mag/Paladyn
+        if (ci.profession === 'Tropiciel' && !newTop.some(c => c.profession === 'Tropiciel')) continue;
+        if (cj.profession === 'Tropiciel' && !newBot.some(c => c.profession === 'Tropiciel')) continue;
+        if (
+          (ci.profession === 'Mag' || ci.profession === 'Paladyn') &&
+          !newTop.some(c => c.profession === 'Mag' || c.profession === 'Paladyn')
+        ) continue;
+        if (
+          (cj.profession === 'Mag' || cj.profession === 'Paladyn') &&
+          !newBot.some(c => c.profession === 'Mag' || c.profession === 'Paladyn')
+        ) continue;
+
+        const gain = (maxScore - minScore) - Math.abs(score(newTop) - score(newBot));
+        if (gain > bestGain) { bestGain = gain; bestSwap = [ci, cj]; }
+      }
+    }
+
+    if (!bestSwap) break;
+    const [ci, cj] = bestSwap;
+    groups[topIdx] = groups[topIdx].filter(c => c.id !== ci.id);
+    groups[topIdx].push(cj);
+    groups[botIdx] = groups[botIdx].filter(c => c.id !== cj.id);
+    groups[botIdx].push(ci);
   }
 }
 
@@ -288,6 +353,7 @@ export function generateGroups(
   fixConstraints(groups, maxGroupSize);
   fixConstraints(groups, maxGroupSize);
   const ejected2 = fixOwnerConflicts(groups, maxGroupSize);
+  balanceGroups(groups, targetLevel, maxGroupSize);
 
   // Collect all characters ejected due to unresolvable owner conflicts
   const allEjected = [...ejected1, ...ejected2];
@@ -329,7 +395,11 @@ export function generateGroups(
             ? 1.5 : 0;
         const paladynEqBonus =
           char.profession === 'Paladyn' ? (char.equipQuality / 5) * 0.8 : 0;
-        const sc = diversity + profW + (1 - qDiff) + tankBonus + paladynEqBonus;
+        // Bonus when tank level ≤ lowest level in group (boss scales to group avg — low tank is good)
+        const isTank = char.profession === 'Wojownik' || char.profession === 'Paladyn';
+        const minGroupLevel = g.length > 0 ? Math.min(...g.map(c => c.level)) : targetLevel;
+        const tankLevelBonus = isTank && char.level <= minGroupLevel ? 1.0 : 0;
+        const sc = diversity + profW + (1 - qDiff) + tankBonus + paladynEqBonus + tankLevelBonus;
         if (sc > bestScore) { bestScore = sc; bestIdx = gi; }
       }
 
@@ -390,10 +460,11 @@ export function generateGroups(
     }
   }
 
+  // Ascending: weakest group first (#1), best group last — "saved for the finale"
   validGroups.sort((a, b) => {
     const qa = a.avgLevelRatio + a.avgEquipQuality / 5;
     const qb = b.avgLevelRatio + b.avgEquipQuality / 5;
-    return qb - qa;
+    return qa - qb;
   });
   validGroups.forEach((g, i) => { g.id = i + 1; });
 
