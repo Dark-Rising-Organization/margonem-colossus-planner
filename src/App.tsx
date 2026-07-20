@@ -363,8 +363,10 @@ export default function App() {
                       : 'danger';
 
                     const tank = group.bestTank;
+                    const tankIsTancerz = tank?.profession === 'Tancerz Ostrzy';
                     const tankTone =
                       !tank ? 'warning'
+                      : tankIsTancerz ? 'warning'
                       : tank.profession === 'Paladyn' && tank.equipQuality >= 4 ? 'success'
                       : tank.profession === 'Paladyn' ? 'info'
                       : tank.equipQuality >= 4 ? 'info'
@@ -386,7 +388,9 @@ export default function App() {
                                   ? 'Tank !'
                                   : tank.profession === 'Paladyn'
                                   ? `Pal eq${tank.equipQuality}`
-                                  : `Woj eq${tank.equipQuality}`}
+                                  : tank.profession === 'Wojownik'
+                                  ? `Woj eq${tank.equipQuality}`
+                                  : `TO eq${tank.equipQuality}~`}
                               </Pill>
                               <Pill size="sm" tone={fillTone}>
                                 {group.members.length}/{maxGS} os.
@@ -417,11 +421,14 @@ export default function App() {
                                   !tank ? '—'
                                   : tank.profession === 'Paladyn'
                                   ? `Pal ${EQUIP_LABELS[tank.equipQuality]}`
-                                  : `Woj ${EQUIP_LABELS[tank.equipQuality]}`
+                                  : tank.profession === 'Wojownik'
+                                  ? `Woj ${EQUIP_LABELS[tank.equipQuality]}`
+                                  : `TO ${EQUIP_LABELS[tank.equipQuality]} (słaby)`
                                 }
                                 label="Najlepszy tank"
                                 tone={
                                   !tank ? 'danger'
+                                  : tankIsTancerz ? 'warning'
                                   : tank.profession === 'Paladyn' && tank.equipQuality >= 4 ? 'success'
                                   : tank.equipQuality >= 3 ? undefined
                                   : 'warning'

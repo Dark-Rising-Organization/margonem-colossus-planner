@@ -15,10 +15,24 @@ function charScore(char: Character, targetLevel: number): number {
   return levelScore * 0.5 + equipScore * 0.5;
 }
 
+/** Paladyn > Wojownik >> Tancerz Ostrzy (~10× weaker than Wojownik). */
 function tankValue(char: Character): number {
   if (char.profession === 'Paladyn') return (char.equipQuality / 5) * 1.5;
   if (char.profession === 'Wojownik') return char.equipQuality / 5;
+  if (char.profession === 'Tancerz Ostrzy') return (char.equipQuality / 5) * 0.1;
   return 0;
+}
+
+function isProperTank(c: Character): boolean {
+  return c.profession === 'Paladyn' || c.profession === 'Wojownik';
+}
+
+function isAnyTank(c: Character): boolean {
+  return tankValue(c) > 0;
+}
+
+function countProperTanks(group: Character[]): number {
+  return group.filter(isProperTank).length;
 }
 
 function bestTankInGroup(group: Character[]): TankInfo | null {
@@ -162,40 +176,66 @@ function fixConstraints(groups: Character[][], maxGroupSize: number): void {
       }
     }
   }
-  // 5. Soft: ensure ≥1 tank (Wojownik/Paladyn) per non-empty group
+  // 5. Tank distribution (Pal/Woj; Tancerz is last-resort only)
+  distributeTanks(groups, maxGroupSize);
+}
+
+/**
+ * Spread proper tanks (Paladyn/Wojownik) so each group has at least one when possible.
+ * Supports move + swap (full groups). Tancerz Ostrzy counts as a weak tank for "has tank"
+ * display, but surplus redistribution only moves Pal/Woj from groups that have ≥2.
+ */
+function distributeTanks(groups: Character[][], maxGroupSize: number): void {
   for (let i = 0; i < groups.length; i++) {
-    const hasTank = groups[i].some(
-      c => c.profession === 'Wojownik' || c.profession === 'Paladyn',
+    if (!groups[i].length || countProperTanks(groups[i]) > 0) continue;
+
+    const donor = groups.findIndex(
+      (g, idx) => idx !== i && countProperTanks(g) >= 2,
     );
-    if (!groups[i].length || hasTank) continue;
-    const donor = groups.findIndex((g, idx) => {
-      const cnt = g.filter(c => c.profession === 'Wojownik' || c.profession === 'Paladyn').length;
-      return (
-        idx !== i &&
-        cnt >= 2 &&
-        g.some(
-          c =>
-            (c.profession === 'Wojownik' || c.profession === 'Paladyn') &&
-            noOwnerIn(groups[i], c.owner),
-        )
-      );
-    });
     if (donor < 0) continue;
-    // Prefer Paladyn over Wojownik; within same class prefer lower level (boss scales lower)
+
+    // Prefer moving Wojownik so donor keeps Paladyn; among same class prefer lower level
     const tankCandidates = groups[donor]
-      .filter(
-        c => (c.profession === 'Paladyn' || c.profession === 'Wojownik') &&
-          noOwnerIn(groups[i], c.owner),
-      )
+      .filter(c => isProperTank(c) && noOwnerIn(groups[i], c.owner))
       .sort((a, b) => {
         if (a.profession !== b.profession)
-          return a.profession === 'Paladyn' ? -1 : 1;
+          return a.profession === 'Wojownik' ? -1 : 1;
         return a.level - b.level;
       });
-    const tankToMove = tankCandidates[0];
-    if (tankToMove && groups[i].length < maxGroupSize) {
-      groups[donor] = groups[donor].filter(c => c.id !== tankToMove.id);
-      groups[i].push(tankToMove);
+
+    for (const tankToMove of tankCandidates) {
+      // Direct move if space
+      if (groups[i].length < maxGroupSize) {
+        groups[donor] = groups[donor].filter(c => c.id !== tankToMove.id);
+        groups[i].push(tankToMove);
+        break;
+      }
+
+      // Swap with a non-critical member of the needy group
+      const swap = groups[i].find(c => {
+        if (isProperTank(c)) return false;
+        if (c.profession === 'Tropiciel' && countProf(groups[i], 'Tropiciel') <= 1) return false;
+        // Keep Mag/Pal coverage unless incoming tank is Paladyn
+        if (
+          (c.profession === 'Mag' || c.profession === 'Paladyn') &&
+          tankToMove.profession !== 'Paladyn' &&
+          !groups[i].some(
+            x => x.id !== c.id && (x.profession === 'Mag' || x.profession === 'Paladyn'),
+          )
+        ) return false;
+        if (!noOwnerIn(groups[donor].filter(x => x.id !== tankToMove.id), c.owner)) return false;
+        if (c.profession === 'Łowca' && countProf(groups[donor], 'Łowca') >= 2) return false;
+        if (c.profession === 'Tropiciel' && countProf(groups[donor], 'Tropiciel') >= 2) return false;
+        return true;
+      });
+
+      if (swap) {
+        groups[i] = groups[i].filter(c => c.id !== swap.id);
+        groups[i].push(tankToMove);
+        groups[donor] = groups[donor].filter(c => c.id !== tankToMove.id);
+        groups[donor].push(swap);
+        break;
+      }
     }
   }
 }
@@ -241,6 +281,10 @@ function balanceGroups(groups: Character[][], targetLevel: number, maxGroupSize:
           (cj.profession === 'Mag' || cj.profession === 'Paladyn') &&
           !newBot.some(c => c.profession === 'Mag' || c.profession === 'Paladyn')
         ) continue;
+
+        // Don't strip a group of its only proper tank (Pal/Woj)
+        if (isProperTank(ci) && countProperTanks(newTop) === 0 && !isProperTank(cj)) continue;
+        if (isProperTank(cj) && countProperTanks(newBot) === 0 && !isProperTank(ci)) continue;
 
         const gain = (maxScore - minScore) - Math.abs(score(newTop) - score(newBot));
         if (gain > bestGain) { bestGain = gain; bestSwap = [ci, cj]; }
@@ -338,14 +382,31 @@ export function generateGroups(
   const groups: Character[][] = Array.from({ length: nGroups }, () => []);
 
   for (let i = 0; i < sorted.length; i++) {
+    const char = sorted[i];
     const round = Math.floor(i / nGroups);
     const idealPos = round % 2 !== 0 ? nGroups - 1 - (i % nGroups) : i % nGroups;
-    let pos = idealPos;
-    for (let offset = 1; offset < nGroups; offset++) {
-      if (!groups[idealPos].some(c => c.owner === sorted[i].owner)) break;
-      pos = (idealPos + offset) % nGroups;
+
+    // Prefer owner-safe group; for proper tanks also prefer a group that has none yet
+    let pos = -1;
+    for (let offset = 0; offset < nGroups; offset++) {
+      const candidate = (idealPos + offset) % nGroups;
+      if (groups[candidate].some(c => c.owner === char.owner)) continue;
+      if (isProperTank(char) && countProperTanks(groups[candidate]) > 0) continue;
+      pos = candidate;
+      break;
     }
-    groups[pos].push(sorted[i]);
+    // Fallback: any owner-safe group (even if it already has a tank)
+    if (pos < 0) {
+      for (let offset = 0; offset < nGroups; offset++) {
+        const candidate = (idealPos + offset) % nGroups;
+        if (!groups[candidate].some(c => c.owner === char.owner)) {
+          pos = candidate;
+          break;
+        }
+      }
+    }
+    if (pos < 0) pos = idealPos;
+    groups[pos].push(char);
   }
 
   const ejected1 = fixOwnerConflicts(groups, maxGroupSize);
@@ -354,9 +415,12 @@ export function generateGroups(
   fixConstraints(groups, maxGroupSize);
   const ejected2 = fixOwnerConflicts(groups, maxGroupSize);
   balanceGroups(groups, targetLevel, maxGroupSize);
+  // Re-spread tanks after quality balancing (which may have shuffled them)
+  distributeTanks(groups, maxGroupSize);
+  const ejected3 = fixOwnerConflicts(groups, maxGroupSize);
 
   // Collect all characters ejected due to unresolvable owner conflicts
-  const allEjected = [...ejected1, ...ejected2];
+  const allEjected = [...ejected1, ...ejected2, ...ejected3];
 
   const unplacedOptional: Character[] = [];
   const sortedExtra = [...extraChars].sort(
@@ -387,18 +451,20 @@ export function generateGroups(
         const qDiff = Math.abs(
           groupAvgScore(g, targetLevel, maxGroupSize) - charScore(char, targetLevel),
         );
-        const groupHasTank = g.some(
-          c => c.profession === 'Wojownik' || c.profession === 'Paladyn',
-        );
+        const groupHasProperTank = g.some(isProperTank);
+        const groupHasAnyTank = g.some(isAnyTank);
+        // Strong bonus for bringing Pal/Woj to a group without one; weak for Tancerz last-resort
         const tankBonus =
-          !groupHasTank && (char.profession === 'Wojownik' || char.profession === 'Paladyn')
-            ? 1.5 : 0;
+          !groupHasProperTank && isProperTank(char) ? 1.5
+          : !groupHasAnyTank && char.profession === 'Tancerz Ostrzy' ? 0.15
+          : 0;
         const paladynEqBonus =
           char.profession === 'Paladyn' ? (char.equipQuality / 5) * 0.8 : 0;
-        // Bonus when tank level ≤ lowest level in group (boss scales to group avg — low tank is good)
-        const isTank = char.profession === 'Wojownik' || char.profession === 'Paladyn';
+        // Bonus when tank level ≤ lowest level in group (boss scales — low tank is good)
         const minGroupLevel = g.length > 0 ? Math.min(...g.map(c => c.level)) : targetLevel;
-        const tankLevelBonus = isTank && char.level <= minGroupLevel ? 1.0 : 0;
+        const tankLevelBonus = isAnyTank(char) && char.level <= minGroupLevel
+          ? (isProperTank(char) ? 1.0 : 0.1)
+          : 0;
         const sc = diversity + profW + (1 - qDiff) + tankBonus + paladynEqBonus + tankLevelBonus;
         if (sc > bestScore) { bestScore = sc; bestIdx = gi; }
       }
