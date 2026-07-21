@@ -70,6 +70,7 @@ export default function App() {
   const [fLevel, setFLevel] = useLS<string>('fl', '50');
   const [fEquip, setFEquip] = useLS<string>('fe', '3');
   const [fFights, setFFights] = useLS<string>('ff', '1');
+  const [fShield, setFShield] = useLS<string>('fs', '1'); // Wojownik: 1=tarcza, 0=nie
 
   // CSV import
   const [csvText, setCsvText] = useLS<string>('csv', '');
@@ -81,14 +82,18 @@ export default function App() {
 
   const addChar = () => {
     if (!fOwner.trim() || !fChar.trim()) return;
+    const profession = fProf as Character['profession'];
     const newChar: Character = {
       id: `m-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       owner: fOwner.trim(),
       characterName: fChar.trim(),
-      profession: fProf as Character['profession'],
+      profession,
       level: Math.max(1, parseInt(fLevel) || tl),
       equipQuality: Math.min(5, Math.max(1, parseInt(fEquip) || 3)),
       availableFights: Math.max(1, parseInt(fFights) || 1),
+      hasShield:
+        profession === 'Paladyn' ||
+        (profession === 'Wojownik' && fShield === '1'),
     };
     setCharacters(prev => [...prev, newChar]);
     setFChar('');
@@ -211,6 +216,19 @@ export default function App() {
                 <label className="form-label">Walki</label>
                 <TextInput value={fFights} onChange={setFFights} type="number" />
               </Stack>
+              {fProf === 'Wojownik' && (
+                <Stack gap={4} style={{ flex: '0 0 120px' }}>
+                  <label className="form-label">Tarcza</label>
+                  <Select
+                    value={fShield}
+                    onChange={setFShield}
+                    options={[
+                      { value: '1', label: 'Tak' },
+                      { value: '0', label: 'Nie' },
+                    ]}
+                  />
+                </Stack>
+              )}
               <Button
                 variant="primary"
                 onClick={addChar}
@@ -226,16 +244,15 @@ export default function App() {
             <Stack gap={8}>
               <H3>Import z arkusza (CSV / Excel)</H3>
               <Text size="small" tone="secondary">
-                Wklej wiersze z arkusza (separator: tab lub średnik).
-                Kolejność: Gracz ; Postać ; Profesja ; Poziom ; Jakość(1–5) ; Walki(opcj.)
+                Kolejność: Gracz ; Postać ; Profesja ; Poziom ; Jakość(1–5) ; Walki ; Tarcza(1/0, tylko Woj)
               </Text>
               <Text size="small" tone="tertiary">
-                Skróty profesji: W=Wojownik, M=Mag, Ł/L=Łowca, Tr=Tropiciel, P=Paladyn, TO/T=Tancerz Ostrzy
+                Profesje: W Woj · M Mag · B Tancerz · T Trop · H Łowca · P Pal · Paladyn = tarcza zawsze
               </Text>
               <TextArea
                 value={csvText}
                 onChange={setCsvText}
-                placeholder={'KrólBajt;Dragonek;Wojownik;48;3;1\nElvira;Moonshade;Mag;52;4;2'}
+                placeholder={'KrólBajt;Dragonek;Wojownik;48;3;1;1\nElvira;Moonshade;Mag;52;4;2'}
                 rows={4}
               />
               {csvErrors.length > 0 && (
@@ -284,8 +301,8 @@ export default function App() {
                 <Table
                   stickyHeader
                   striped
-                  headers={['Gracz', 'Postać', 'Profesja', 'Poziom', 'Jakość ekwipunku', 'Walki', '']}
-                  columnAlign={['left', 'left', 'left', 'right', 'left', 'center', 'center']}
+                  headers={['Gracz', 'Postać', 'Profesja', 'Poziom', 'Jakość ekwipunku', 'Walki', 'Tarcza', '']}
+                  columnAlign={['left', 'left', 'left', 'right', 'left', 'center', 'center', 'center']}
                   rows={characters.map(c => [
                     c.owner,
                     c.characterName,
@@ -295,6 +312,11 @@ export default function App() {
                     c.availableFights === 1
                       ? <Pill size="sm">wymagana</Pill>
                       : <Pill size="sm" tone="info">{c.availableFights}×</Pill>,
+                    c.profession === 'Paladyn' || c.hasShield
+                      ? <Pill size="sm" tone="success">tak</Pill>
+                      : c.profession === 'Wojownik'
+                      ? <Pill size="sm" tone="warning">nie</Pill>
+                      : '—',
                     <IconButton
                       key="del"
                       title="Usuń postać"
@@ -484,8 +506,8 @@ export default function App() {
 
                             <Table
                               striped
-                              headers={['Gracz', 'Postać', 'Profesja', 'Poziom', 'Jakość ekwip.', 'Walki']}
-                              columnAlign={['left', 'left', 'left', 'right', 'left', 'center']}
+                              headers={['Gracz', 'Postać', 'Profesja', 'Poziom', 'Jakość ekwip.', 'Walki', 'Tarcza']}
+                              columnAlign={['left', 'left', 'left', 'right', 'left', 'center', 'center']}
                               rows={group.members.map(c => [
                                 c.owner,
                                 c.characterName,
@@ -493,6 +515,11 @@ export default function App() {
                                 c.level,
                                 `${c.equipQuality} — ${EQUIP_LABELS[c.equipQuality]}`,
                                 c.availableFights === 1 ? '1 (wym.)' : `${c.availableFights}×`,
+                                c.profession === 'Paladyn' || c.hasShield
+                                  ? 'tak'
+                                  : c.profession === 'Wojownik'
+                                  ? 'nie'
+                                  : '—',
                               ])}
                             />
                           </Stack>

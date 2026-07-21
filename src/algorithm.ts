@@ -15,16 +15,22 @@ function charScore(char: Character, targetLevel: number): number {
   return levelScore * 0.5 + equipScore * 0.5;
 }
 
-/** Paladyn > Wojownik >> Tancerz Ostrzy (~10× weaker than Wojownik). */
+/** Tank = tarcza: Paladyn zawsze, Wojownik tylko ze zadeklarowaną tarczą. Tancerz = awaryjny. */
+function hasShield(char: Character): boolean {
+  if (char.profession === 'Paladyn') return true;
+  if (char.profession === 'Wojownik') return Boolean(char.hasShield);
+  return false;
+}
+
 function tankValue(char: Character): number {
   if (char.profession === 'Paladyn') return (char.equipQuality / 5) * 1.5;
-  if (char.profession === 'Wojownik') return char.equipQuality / 5;
+  if (char.profession === 'Wojownik' && char.hasShield) return char.equipQuality / 5;
   if (char.profession === 'Tancerz Ostrzy') return (char.equipQuality / 5) * 0.1;
   return 0;
 }
 
 function isProperTank(c: Character): boolean {
-  return c.profession === 'Paladyn' || c.profession === 'Wojownik';
+  return hasShield(c);
 }
 
 function isAnyTank(c: Character): boolean {
@@ -541,13 +547,21 @@ export function parseProfession(raw: string): Profession | null {
   const map: Record<string, Profession> = {
     'wojownik': 'Wojownik', 'w': 'Wojownik',
     'mag': 'Mag', 'm': 'Mag',
-    'łowca': 'Łowca', 'lowca': 'Łowca', 'l': 'Łowca', 'ł': 'Łowca',
+    'łowca': 'Łowca', 'lowca': 'Łowca', 'h': 'Łowca', 'l': 'Łowca', 'ł': 'Łowca',
     'tancerz ostrzy': 'Tancerz Ostrzy', 'tancerz': 'Tancerz Ostrzy',
-    'to': 'Tancerz Ostrzy', 't': 'Tancerz Ostrzy',
+    'b': 'Tancerz Ostrzy', 'to': 'Tancerz Ostrzy',
     'paladyn': 'Paladyn', 'p': 'Paladyn',
-    'tropiciel': 'Tropiciel', 'tr': 'Tropiciel',
+    'tropiciel': 'Tropiciel', 't': 'Tropiciel', 'tr': 'Tropiciel',
   };
   return map[raw.toLowerCase().trim()] ?? null;
+}
+
+function parseShield(raw: string | undefined, profession: Profession): boolean {
+  if (profession === 'Paladyn') return true;
+  if (profession !== 'Wojownik') return false;
+  if (raw == null || raw === '') return false;
+  const v = raw.toLowerCase().trim();
+  return v === '1' || v === 'tak' || v === 'true' || v === 'yes' || v === 'tarcza';
 }
 
 export function parseCSV(text: string): { chars: Character[]; errors: string[] } {
@@ -569,7 +583,7 @@ export function parseCSV(text: string): { chars: Character[]; errors: string[] }
       errors.push(`Wiersz ${i + 1}: za mało kolumn (min. 4)`);
       continue;
     }
-    const [owner, characterName, profRaw, levelRaw, equipRaw, fightsRaw] = parts;
+    const [owner, characterName, profRaw, levelRaw, equipRaw, fightsRaw, shieldRaw] = parts;
     const profession = parseProfession(profRaw ?? '');
     if (!profession) {
       errors.push(`Wiersz ${i + 1}: nieznana profesja "${profRaw}"`);
@@ -590,6 +604,7 @@ export function parseCSV(text: string): { chars: Character[]; errors: string[] }
       level,
       equipQuality,
       availableFights,
+      hasShield: parseShield(shieldRaw, profession),
     });
   }
   return { chars, errors };

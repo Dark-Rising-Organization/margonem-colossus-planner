@@ -14,6 +14,8 @@ export interface Character {
   level: number;
   equipQuality: number; // 1–5
   availableFights: number; // 1 = required, >1 = optional
+  /** Tarcza: Paladyn domyślnie true; Wojownik tylko gdy zadeklarował */
+  hasShield: boolean;
 }
 
 export interface TankInfo {
