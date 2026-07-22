@@ -376,6 +376,7 @@ export function generateGroups(
 
   const ownerCount: Record<string, number> = {};
   for (const c of mainChars) ownerCount[c.owner] = (ownerCount[c.owner] ?? 0) + 1;
+  const maxOwnerChars = Math.max(0, ...Object.values(ownerCount));
 
   const sorted = [...mainChars].sort((a, b) => {
     const countDiff = (ownerCount[b.owner] ?? 0) - (ownerCount[a.owner] ?? 0);
@@ -383,9 +384,24 @@ export function generateGroups(
     return charScore(b, targetLevel) - charScore(a, targetLevel);
   });
 
+  // Liczba grup: dość slotów + dość grup, by rozdzielić graczy z wieloma postaciami.
+  // Opcjonalne (rebitki) mogą domykać grupy do minGroupSize.
   const targetSize = Math.round((minGroupSize + maxGroupSize) / 2);
-  const nGroups = Math.max(1, Math.round(sorted.length / targetSize));
+  const optionalFightPool = extraChars.reduce((s, c) => s + c.availableFights, 0);
+  const nGroupsMin = Math.max(1, Math.ceil(sorted.length / maxGroupSize));
+  const nGroupsMax =
+    Math.max(
+      nGroupsMin,
+      Math.floor((sorted.length + optionalFightPool) / minGroupSize),
+    );
+  const nGroupsIdeal = Math.max(
+    nGroupsMin,
+    Math.max(maxOwnerChars, Math.round(sorted.length / targetSize)),
+  );
+  const nGroups = Math.min(nGroupsMax, nGroupsIdeal);
   const groups: Character[][] = Array.from({ length: nGroups }, () => []);
+
+  const leftoverRequired: Character[] = [];
 
   for (let i = 0; i < sorted.length; i++) {
     const char = sorted[i];
@@ -397,21 +413,27 @@ export function generateGroups(
     for (let offset = 0; offset < nGroups; offset++) {
       const candidate = (idealPos + offset) % nGroups;
       if (groups[candidate].some(c => c.owner === char.owner)) continue;
+      if (groups[candidate].length >= maxGroupSize) continue;
       if (isProperTank(char) && countProperTanks(groups[candidate]) > 0) continue;
       pos = candidate;
       break;
     }
-    // Fallback: any owner-safe group (even if it already has a tank)
+    // Fallback: any owner-safe group with space
     if (pos < 0) {
       for (let offset = 0; offset < nGroups; offset++) {
         const candidate = (idealPos + offset) % nGroups;
+        if (groups[candidate].length >= maxGroupSize) continue;
         if (!groups[candidate].some(c => c.owner === char.owner)) {
           pos = candidate;
           break;
         }
       }
     }
-    if (pos < 0) pos = idealPos;
+    // Ostateczność: nie wpychaj w konflikt właściciela — odłóż na później
+    if (pos < 0) {
+      leftoverRequired.push(char);
+      continue;
+    }
     groups[pos].push(char);
   }
 
@@ -421,12 +443,17 @@ export function generateGroups(
   fixConstraints(groups, maxGroupSize);
   const ejected2 = fixOwnerConflicts(groups, maxGroupSize);
   balanceGroups(groups, targetLevel, maxGroupSize);
-  // Re-spread tanks after quality balancing (which may have shuffled them)
   distributeTanks(groups, maxGroupSize);
   const ejected3 = fixOwnerConflicts(groups, maxGroupSize);
 
-  // Collect all characters ejected due to unresolvable owner conflicts
-  const allEjected = [...ejected1, ...ejected2, ...ejected3];
+  let pendingRequired = [
+    ...leftoverRequired,
+    ...ejected1,
+    ...ejected2,
+    ...ejected3,
+  ].filter(c => c.availableFights === 1);
+  // unique by id (mogły się powtórzyć)
+  pendingRequired = [...new Map(pendingRequired.map(c => [c.id, c])).values()];
 
   const unplacedOptional: Character[] = [];
   const sortedExtra = [...extraChars].sort(
@@ -434,8 +461,45 @@ export function generateGroups(
   );
   const slotsUsed = new Map<string, number>();
 
-  for (let pass = 0; pass < 5; pass++) {
+  /** Czy opcjonalna postać może wejść do grupy (twarde limity). */
+  function canPlaceOptional(char: Character, g: Character[]): boolean {
+    if (g.length >= maxGroupSize) return false;
+    if (g.some(c => c.id === char.id)) return false;
+    if (g.some(c => c.owner === char.owner)) return false;
+    if (char.profession === 'Tropiciel' && countProf(g, 'Tropiciel') >= 2) return false;
+    if (char.profession === 'Łowca' && countProf(g, 'Łowca') >= 2) return false;
+    return true;
+  }
+
+  function scoreOptionalPlacement(char: Character, g: Character[]): number {
+    const profs = new Set(g.map(c => c.profession));
+    const diversity = profs.has(char.profession) ? 0 : 2;
+    const profW = PROF_WEIGHTS[char.profession] / 6;
+    const qDiff = Math.abs(
+      groupAvgScore(g, targetLevel, maxGroupSize) - charScore(char, targetLevel),
+    );
+    const groupHasProperTank = g.some(isProperTank);
+    const groupHasAnyTank = g.some(isAnyTank);
+    const tankBonus =
+      !groupHasProperTank && isProperTank(char) ? 1.5
+      : !groupHasAnyTank && char.profession === 'Tancerz Ostrzy' ? 0.15
+      : 0;
+    const paladynEqBonus =
+      char.profession === 'Paladyn' ? (char.equipQuality / 5) * 0.8 : 0;
+    const minGroupLevel = g.length > 0 ? Math.min(...g.map(c => c.level)) : targetLevel;
+    const tankLevelBonus = isAnyTank(char) && char.level <= minGroupLevel
+      ? (isProperTank(char) ? 1.0 : 0.1)
+      : 0;
+    // Priorytet: domykać grupy poniżej min. rozmiaru (żeby wymagane nie wyleciały)
+    const fillBonus = g.length < minGroupSize ? (minGroupSize - g.length) * 8 : 0;
+    return diversity + profW + (1 - qDiff) + tankBonus + paladynEqBonus + tankLevelBonus + fillBonus;
+  }
+
+  // Pass 1: najpierw domykaj grupy poniżej minGroupSize rebitkami
+  // Pass 2+: normalne wypełnianie
+  for (let pass = 0; pass < 8; pass++) {
     let anyPlaced = false;
+    const preferUndersized = pass < 4;
     for (const char of sortedExtra) {
       const used = slotsUsed.get(char.id) ?? 0;
       if (used >= char.availableFights) continue;
@@ -445,36 +509,101 @@ export function generateGroups(
 
       for (let gi = 0; gi < groups.length; gi++) {
         const g = groups[gi];
-        if (g.length >= maxGroupSize) continue;
-        if (g.some(c => c.id === char.id)) continue;
-        if (g.some(c => c.owner === char.owner)) continue;
-        if (char.profession === 'Tropiciel' && countProf(g, 'Tropiciel') >= 2) continue;
-        if (char.profession === 'Łowca' && countProf(g, 'Łowca') >= 2) continue;
-
-        const profs = new Set(g.map(c => c.profession));
-        const diversity = profs.has(char.profession) ? 0 : 2;
-        const profW = PROF_WEIGHTS[char.profession] / 6;
-        const qDiff = Math.abs(
-          groupAvgScore(g, targetLevel, maxGroupSize) - charScore(char, targetLevel),
-        );
-        const groupHasProperTank = g.some(isProperTank);
-        const groupHasAnyTank = g.some(isAnyTank);
-        // Strong bonus for bringing Pal/Woj to a group without one; weak for Tancerz last-resort
-        const tankBonus =
-          !groupHasProperTank && isProperTank(char) ? 1.5
-          : !groupHasAnyTank && char.profession === 'Tancerz Ostrzy' ? 0.15
-          : 0;
-        const paladynEqBonus =
-          char.profession === 'Paladyn' ? (char.equipQuality / 5) * 0.8 : 0;
-        // Bonus when tank level ≤ lowest level in group (boss scales — low tank is good)
-        const minGroupLevel = g.length > 0 ? Math.min(...g.map(c => c.level)) : targetLevel;
-        const tankLevelBonus = isAnyTank(char) && char.level <= minGroupLevel
-          ? (isProperTank(char) ? 1.0 : 0.1)
-          : 0;
-        const sc = diversity + profW + (1 - qDiff) + tankBonus + paladynEqBonus + tankLevelBonus;
+        if (!canPlaceOptional(char, g)) continue;
+        if (preferUndersized && g.length >= minGroupSize) continue;
+        const sc = scoreOptionalPlacement(char, g);
         if (sc > bestScore) { bestScore = sc; bestIdx = gi; }
       }
 
+      // Jeśli w preferUndersized nic nie znaleziono — w późniejszych passach i tak wejdzie
+      if (bestIdx < 0 && !preferUndersized) continue;
+      if (bestIdx < 0) continue;
+
+      groups[bestIdx].push(char);
+      slotsUsed.set(char.id, used + 1);
+      anyPlaced = true;
+    }
+    if (!anyPlaced && !preferUndersized) break;
+  }
+
+  // Spróbuj wcisnąć wymagane, które wypadły / nie weszły
+  function tryPlaceRequired(char: Character): boolean {
+    let bestIdx = -1;
+    let bestScore = -Infinity;
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi];
+      if (g.length >= maxGroupSize) continue;
+      if (g.some(c => c.owner === char.owner)) continue;
+      if (char.profession === 'Tropiciel' && countProf(g, 'Tropiciel') >= 2) continue;
+      if (char.profession === 'Łowca' && countProf(g, 'Łowca') >= 2) continue;
+      // Preferuj grupy poniżej min (żeby uratować i tę postać, i grupę)
+      const sc = (g.length < minGroupSize ? 100 : 0) - g.length;
+      if (sc > bestScore) { bestScore = sc; bestIdx = gi; }
+    }
+    if (bestIdx < 0) return false;
+    groups[bestIdx].push(char);
+    return true;
+  }
+
+  const stillUnplacedRequired: Character[] = [];
+  for (const char of pendingRequired) {
+    if (!tryPlaceRequired(char)) stillUnplacedRequired.push(char);
+  }
+
+  // Ostatnia szansa: wypchnij rebitkę, by wcisnąć wymaganą
+  for (const char of [...stillUnplacedRequired]) {
+    let placed = false;
+    for (let gi = 0; gi < groups.length && !placed; gi++) {
+      const g = groups[gi];
+      if (g.some(c => c.owner === char.owner)) continue;
+      if (char.profession === 'Tropiciel' && countProf(g, 'Tropiciel') >= 2) continue;
+      if (char.profession === 'Łowca' && countProf(g, 'Łowca') >= 2) continue;
+
+      if (g.length < maxGroupSize) {
+        g.push(char);
+        placed = true;
+        break;
+      }
+
+      const victim = g.find(c => {
+        if (c.availableFights <= 1) return false;
+        if (c.profession === 'Tropiciel' && countProf(g, 'Tropiciel') <= 1) return false;
+        if (
+          (c.profession === 'Mag' || c.profession === 'Paladyn') &&
+          !g.some(x => x.id !== c.id && (x.profession === 'Mag' || x.profession === 'Paladyn'))
+        ) return false;
+        if (isProperTank(c) && countProperTanks(g) <= 1 && !isProperTank(char)) return false;
+        return true;
+      });
+      if (victim) {
+        groups[gi] = g.filter(c => c.id !== victim.id);
+        groups[gi].push(char);
+        const used = slotsUsed.get(victim.id) ?? 1;
+        slotsUsed.set(victim.id, Math.max(0, used - 1));
+        placed = true;
+      }
+    }
+    if (placed) {
+      const idx = stillUnplacedRequired.findIndex(c => c.id === char.id);
+      if (idx >= 0) stillUnplacedRequired.splice(idx, 1);
+    }
+  }
+
+  // Dociągnij rebitki do grup < min
+  for (let pass = 0; pass < 4; pass++) {
+    let anyPlaced = false;
+    for (const char of sortedExtra) {
+      const used = slotsUsed.get(char.id) ?? 0;
+      if (used >= char.availableFights) continue;
+      let bestIdx = -1;
+      let bestScore = -Infinity;
+      for (let gi = 0; gi < groups.length; gi++) {
+        const g = groups[gi];
+        if (g.length >= minGroupSize) continue;
+        if (!canPlaceOptional(char, g)) continue;
+        const sc = scoreOptionalPlacement(char, g);
+        if (sc > bestScore) { bestScore = sc; bestIdx = gi; }
+      }
       if (bestIdx >= 0) {
         groups[bestIdx].push(char);
         slotsUsed.set(char.id, used + 1);
@@ -488,51 +617,100 @@ export function generateGroups(
     if ((slotsUsed.get(char.id) ?? 0) === 0) unplacedOptional.push(char);
   }
 
-  const validGroups: GroupResult[] = [];
-  const unplacedRequired: Character[] = [
-    ...allEjected.filter(c => c.availableFights === 1),
-  ];
-  unplacedOptional.push(...allEjected.filter(c => c.availableFights > 1));
-
-  for (const group of groups) {
-    if (group.length >= minGroupSize) {
-      const id = validGroups.length + 1;
-      const rawAvgLevelRatio =
-        group.reduce((s, c) => s + c.level / targetLevel, 0) / group.length;
-      const rawAvgEquipQuality =
-        group.reduce((s, c) => s + c.equipQuality, 0) / group.length;
-      const avgLevelRatio =
-        group.reduce((s, c) => s + c.level / targetLevel, 0) / maxGroupSize;
-      const avgEquipQuality =
-        group.reduce((s, c) => s + c.equipQuality, 0) / maxGroupSize;
-      const hasTropiciel = group.some(c => c.profession === 'Tropiciel');
-      const hasMagOrPaladyn = group.some(
-        c => c.profession === 'Mag' || c.profession === 'Paladyn',
-      );
-      const professionCount: Partial<Record<Profession, number>> = {};
-      for (const prof of PROFESSIONS) {
-        const cnt = countProf(group, prof);
-        if (cnt > 0) professionCount[prof] = cnt;
+  // Przenieś członków z grup poniżej min do innych grup (nie duplikuj)
+  for (let gi = 0; gi < groups.length; gi++) {
+    if (groups[gi].length >= minGroupSize) continue;
+    const stranded = [...groups[gi]];
+    groups[gi] = [];
+    for (const char of stranded) {
+      if (char.availableFights === 1) {
+        if (!tryPlaceRequired(char)) stillUnplacedRequired.push(char);
+      } else {
+        let moved = false;
+        for (let gj = 0; gj < groups.length; gj++) {
+          if (gj === gi) continue;
+          if (!canPlaceOptional(char, groups[gj])) continue;
+          groups[gj].push(char);
+          moved = true;
+          break;
+        }
+        if (!moved) unplacedOptional.push(char);
       }
-      const bestTank = bestTankInGroup(group);
-      const ownerCounts: Record<string, number> = {};
-      for (const c of group) ownerCounts[c.owner] = (ownerCounts[c.owner] ?? 0) + 1;
-      const ownerConflicts = Object.entries(ownerCounts)
-        .filter(([, cnt]) => cnt > 1)
-        .map(([owner]) => owner);
-      validGroups.push({
-        id, members: group,
-        avgLevelRatio, avgEquipQuality,
-        rawAvgLevelRatio, rawAvgEquipQuality,
-        hasTropiciel, hasMagOrPaladyn, professionCount, bestTank, ownerConflicts,
-      });
-    } else {
-      unplacedRequired.push(...group.filter(c => c.availableFights === 1));
-      unplacedOptional.push(...group.filter(c => c.availableFights > 1));
     }
   }
 
-  // Ascending: weakest group first (#1), best group last — "saved for the finale"
+  // Po przenosinach — jeszcze raz rebitki do ewentualnych dziur
+  for (let pass = 0; pass < 3; pass++) {
+    let anyPlaced = false;
+    for (const char of sortedExtra) {
+      const used = slotsUsed.get(char.id) ?? 0;
+      if (used >= char.availableFights) continue;
+      // już może być w unplacedOptional — wyjmij jeśli uda się wcisnąć
+      for (let gi = 0; gi < groups.length; gi++) {
+        const g = groups[gi];
+        if (g.length >= minGroupSize && g.length >= maxGroupSize) continue;
+        if (g.length >= maxGroupSize) continue;
+        if (!canPlaceOptional(char, g)) continue;
+        // tylko gdy pomaga domknąć LUB jest miejsce w już valid
+        if (g.length < minGroupSize || g.length < maxGroupSize) {
+          const prefer = g.length < minGroupSize;
+          if (!prefer && g.length >= minGroupSize) {
+            // ok, normal fill
+          }
+          g.push(char);
+          slotsUsed.set(char.id, used + 1);
+          const uidx = unplacedOptional.findIndex(c => c.id === char.id);
+          if (uidx >= 0) unplacedOptional.splice(uidx, 1);
+          anyPlaced = true;
+          break;
+        }
+      }
+    }
+    if (!anyPlaced) break;
+  }
+
+  const validGroups: GroupResult[] = [];
+  const unplacedRequired: Character[] = [...stillUnplacedRequired];
+
+  for (const group of groups) {
+    if (group.length < minGroupSize) {
+      // nie powinno się zdarzyć po cleanup — na wszelki wypadek
+      unplacedRequired.push(...group.filter(c => c.availableFights === 1));
+      unplacedOptional.push(...group.filter(c => c.availableFights > 1));
+      continue;
+    }
+    const id = validGroups.length + 1;
+    const rawAvgLevelRatio =
+      group.reduce((s, c) => s + c.level / targetLevel, 0) / group.length;
+    const rawAvgEquipQuality =
+      group.reduce((s, c) => s + c.equipQuality, 0) / group.length;
+    const avgLevelRatio =
+      group.reduce((s, c) => s + c.level / targetLevel, 0) / maxGroupSize;
+    const avgEquipQuality =
+      group.reduce((s, c) => s + c.equipQuality, 0) / maxGroupSize;
+    const hasTropiciel = group.some(c => c.profession === 'Tropiciel');
+    const hasMagOrPaladyn = group.some(
+      c => c.profession === 'Mag' || c.profession === 'Paladyn',
+    );
+    const professionCount: Partial<Record<Profession, number>> = {};
+    for (const prof of PROFESSIONS) {
+      const cnt = countProf(group, prof);
+      if (cnt > 0) professionCount[prof] = cnt;
+    }
+    const bestTank = bestTankInGroup(group);
+    const ownerCounts: Record<string, number> = {};
+    for (const c of group) ownerCounts[c.owner] = (ownerCounts[c.owner] ?? 0) + 1;
+    const ownerConflicts = Object.entries(ownerCounts)
+      .filter(([, cnt]) => cnt > 1)
+      .map(([owner]) => owner);
+    validGroups.push({
+      id, members: group,
+      avgLevelRatio, avgEquipQuality,
+      rawAvgLevelRatio, rawAvgEquipQuality,
+      hasTropiciel, hasMagOrPaladyn, professionCount, bestTank, ownerConflicts,
+    });
+  }
+
   validGroups.sort((a, b) => {
     const qa = a.avgLevelRatio + a.avgEquipQuality / 5;
     const qb = b.avgLevelRatio + b.avgEquipQuality / 5;
@@ -540,7 +718,13 @@ export function generateGroups(
   });
   validGroups.forEach((g, i) => { g.id = i + 1; });
 
-  return { groups: validGroups, unplacedRequired, unplacedOptional };
+  const uniq = (arr: Character[]) => [...new Map(arr.map(c => [c.id, c])).values()];
+
+  return {
+    groups: validGroups,
+    unplacedRequired: uniq(unplacedRequired),
+    unplacedOptional: uniq(unplacedOptional),
+  };
 }
 
 export function parseProfession(raw: string): Profession | null {
