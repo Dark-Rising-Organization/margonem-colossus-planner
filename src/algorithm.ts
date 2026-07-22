@@ -246,64 +246,163 @@ function distributeTanks(groups: Character[][], maxGroupSize: number): void {
   }
 }
 
-// After all constraint passes: swap characters between the strongest and weakest group
-// to narrow the quality gap, without breaking profession/owner hard constraints.
+/** Metryka jak w UI / sortowaniu grup: padded lvl + eq (puste sloty = 0). */
+function groupDisplayScore(g: Character[], targetLevel: number, maxGroupSize: number): number {
+  if (!g.length) return 0;
+  const level = g.reduce((s, c) => s + c.level / targetLevel, 0) / maxGroupSize;
+  const equip = g.reduce((s, c) => s + c.equipQuality, 0) / maxGroupSize;
+  return level + equip / 5;
+}
+
+/** Wkład postaci w lvl/eq (wyższy = mocniej ciągnie średnie grupy w górę). */
+function charDisplayValue(c: Character, targetLevel: number): number {
+  return c.level / targetLevel + c.equipQuality / 5;
+}
+
+/**
+ * Cel: jak najwyższe średnie lvl/eq w grupach ORAZ możliwie równe grupy.
+ * score = min(grup) + 0.35 * średnia(grup)  → podnosimy słabe, nie równamy w dół na siłę.
+ */
+function rosterDisplayObjective(
+  groups: Character[][],
+  targetLevel: number,
+  maxGroupSize: number,
+): number {
+  if (!groups.length) return 0;
+  const scores = groups.map(g => groupDisplayScore(g, targetLevel, maxGroupSize));
+  const min = Math.min(...scores);
+  const avg = scores.reduce((s, x) => s + x, 0) / scores.length;
+  return min + 0.35 * avg;
+}
+
+// Wyrównuj grupy po padded lvl+eq, maksymalizując objective (wysoko + równo)
 function balanceGroups(groups: Character[][], targetLevel: number, maxGroupSize: number): void {
-  const score = (g: Character[]) => groupAvgScore(g, targetLevel, maxGroupSize);
+  const objective = () => rosterDisplayObjective(groups, targetLevel, maxGroupSize);
 
-  for (let pass = 0; pass < 15; pass++) {
-    const scores = groups.map(score);
-    const maxScore = Math.max(...scores);
-    const minScore = Math.min(...scores);
-    if (maxScore - minScore < 0.04) break;
+  for (let pass = 0; pass < 30; pass++) {
+    const baseline = objective();
+    let bestSwap: { i: number; j: number; ci: Character; cj: Character; score: number } | null = null;
 
-    const topIdx = scores.indexOf(maxScore);
-    const botIdx = scores.indexOf(minScore);
+    for (let i = 0; i < groups.length; i++) {
+      for (let j = i + 1; j < groups.length; j++) {
+        for (const ci of groups[i]) {
+          for (const cj of groups[j]) {
+            if (!canSwapBetween(groups, i, j, ci, cj)) continue;
 
-    let bestSwap: [Character, Character] | null = null;
-    let bestGain = 0.004;
+            // Symulacja
+            const savedI = groups[i];
+            const savedJ = groups[j];
+            groups[i] = [...savedI.filter(c => c.id !== ci.id), cj];
+            groups[j] = [...savedJ.filter(c => c.id !== cj.id), ci];
+            const sc = objective();
+            groups[i] = savedI;
+            groups[j] = savedJ;
 
-    for (const ci of groups[topIdx]) {
-      for (const cj of groups[botIdx]) {
-        if (groups[topIdx].some(c => c.id !== ci.id && c.owner === cj.owner)) continue;
-        if (groups[botIdx].some(c => c.id !== cj.id && c.owner === ci.owner)) continue;
-
-        const newTop = [...groups[topIdx].filter(c => c.id !== ci.id), cj];
-        const newBot = [...groups[botIdx].filter(c => c.id !== cj.id), ci];
-
-        if (cj.profession === 'Tropiciel' && countProf(newTop, 'Tropiciel') > 2) continue;
-        if (cj.profession === 'Łowca'     && countProf(newTop, 'Łowca')     > 2) continue;
-        if (ci.profession === 'Tropiciel' && countProf(newBot, 'Tropiciel') > 2) continue;
-        if (ci.profession === 'Łowca'     && countProf(newBot, 'Łowca')     > 2) continue;
-
-        // Don't leave the group without its mandatory Tropiciel or Mag/Paladyn
-        if (ci.profession === 'Tropiciel' && !newTop.some(c => c.profession === 'Tropiciel')) continue;
-        if (cj.profession === 'Tropiciel' && !newBot.some(c => c.profession === 'Tropiciel')) continue;
-        if (
-          (ci.profession === 'Mag' || ci.profession === 'Paladyn') &&
-          !newTop.some(c => c.profession === 'Mag' || c.profession === 'Paladyn')
-        ) continue;
-        if (
-          (cj.profession === 'Mag' || cj.profession === 'Paladyn') &&
-          !newBot.some(c => c.profession === 'Mag' || c.profession === 'Paladyn')
-        ) continue;
-
-        // Don't strip a group of its only proper tank (Pal/Woj)
-        if (isProperTank(ci) && countProperTanks(newTop) === 0 && !isProperTank(cj)) continue;
-        if (isProperTank(cj) && countProperTanks(newBot) === 0 && !isProperTank(ci)) continue;
-
-        const gain = (maxScore - minScore) - Math.abs(score(newTop) - score(newBot));
-        if (gain > bestGain) { bestGain = gain; bestSwap = [ci, cj]; }
+            if (sc > baseline + 0.002 && (!bestSwap || sc > bestSwap.score)) {
+              bestSwap = { i, j, ci, cj, score: sc };
+            }
+          }
+        }
       }
     }
 
     if (!bestSwap) break;
-    const [ci, cj] = bestSwap;
-    groups[topIdx] = groups[topIdx].filter(c => c.id !== ci.id);
-    groups[topIdx].push(cj);
-    groups[botIdx] = groups[botIdx].filter(c => c.id !== cj.id);
-    groups[botIdx].push(ci);
+    const { i, j, ci, cj } = bestSwap;
+    groups[i] = groups[i].filter(c => c.id !== ci.id);
+    groups[i].push(cj);
+    groups[j] = groups[j].filter(c => c.id !== cj.id);
+    groups[j].push(ci);
   }
+}
+
+/** Hard constraints for a swap between two groups. */
+function canSwapBetween(
+  groups: Character[][],
+  i: number,
+  j: number,
+  ci: Character,
+  cj: Character,
+): boolean {
+  if (groups[i].some(c => c.id !== ci.id && c.owner === cj.owner)) return false;
+  if (groups[j].some(c => c.id !== cj.id && c.owner === ci.owner)) return false;
+
+  const newI = [...groups[i].filter(c => c.id !== ci.id), cj];
+  const newJ = [...groups[j].filter(c => c.id !== cj.id), ci];
+
+  if (cj.profession === 'Tropiciel' && countProf(newI, 'Tropiciel') > 2) return false;
+  if (cj.profession === 'Łowca' && countProf(newI, 'Łowca') > 2) return false;
+  if (ci.profession === 'Tropiciel' && countProf(newJ, 'Tropiciel') > 2) return false;
+  if (ci.profession === 'Łowca' && countProf(newJ, 'Łowca') > 2) return false;
+
+  if (ci.profession === 'Tropiciel' && !newI.some(c => c.profession === 'Tropiciel')) return false;
+  if (cj.profession === 'Tropiciel' && !newJ.some(c => c.profession === 'Tropiciel')) return false;
+  if (
+    (ci.profession === 'Mag' || ci.profession === 'Paladyn') &&
+    !newI.some(c => c.profession === 'Mag' || c.profession === 'Paladyn')
+  ) return false;
+  if (
+    (cj.profession === 'Mag' || cj.profession === 'Paladyn') &&
+    !newJ.some(c => c.profession === 'Mag' || c.profession === 'Paladyn')
+  ) return false;
+
+  if (isProperTank(ci) && countProperTanks(newI) === 0 && !isProperTank(cj)) return false;
+  if (isProperTank(cj) && countProperTanks(newJ) === 0 && !isProperTank(ci)) return false;
+
+  return true;
+}
+
+/**
+ * Mniejsza grupa nadrabia brakujący slot wyższym lvl/eq.
+ * Używa tego samego objective: wysoko + równo (min + 0.35*avg).
+ */
+function compensateSizeWithQuality(
+  groups: Character[][],
+  targetLevel: number,
+  maxGroupSize: number,
+): void {
+  const cVal = (c: Character) => charDisplayValue(c, targetLevel);
+  const objective = () => rosterDisplayObjective(groups, targetLevel, maxGroupSize);
+
+  for (let pass = 0; pass < 40; pass++) {
+    const baseline = objective();
+    let best: {
+      from: number; to: number; strong: Character; weak: Character; score: number;
+    } | null = null;
+
+    for (let big = 0; big < groups.length; big++) {
+      for (let small = 0; small < groups.length; small++) {
+        if (big === small) continue;
+        if (groups[big].length < groups[small].length) continue;
+
+        for (const strong of groups[big]) {
+          for (const weak of groups[small]) {
+            if (cVal(strong) <= cVal(weak) + 0.02) continue;
+            if (!canSwapBetween(groups, big, small, strong, weak)) continue;
+
+            const savedBig = groups[big];
+            const savedSmall = groups[small];
+            groups[big] = [...savedBig.filter(c => c.id !== strong.id), weak];
+            groups[small] = [...savedSmall.filter(c => c.id !== weak.id), strong];
+            const sc = objective();
+            groups[big] = savedBig;
+            groups[small] = savedSmall;
+
+            if (sc > baseline + 0.002 && (!best || sc > best.score)) {
+              best = { from: big, to: small, strong, weak, score: sc };
+            }
+          }
+        }
+      }
+    }
+
+    if (!best) break;
+    groups[best.from] = groups[best.from].filter(c => c.id !== best.strong.id);
+    groups[best.from].push(best.weak);
+    groups[best.to] = groups[best.to].filter(c => c.id !== best.weak.id);
+    groups[best.to].push(best.strong);
+  }
+
+  balanceGroups(groups, targetLevel, maxGroupSize);
 }
 
 // Returns characters that could not be placed anywhere without creating a conflict.
@@ -381,7 +480,8 @@ export function generateGroups(
   const sorted = [...mainChars].sort((a, b) => {
     const countDiff = (ownerCount[b.owner] ?? 0) - (ownerCount[a.owner] ?? 0);
     if (countDiff !== 0) return countDiff;
-    return charScore(b, targetLevel) - charScore(a, targetLevel);
+    // Wyższy lvl/eq najpierw (snake draft rozrzuca jakość)
+    return charDisplayValue(b, targetLevel) - charDisplayValue(a, targetLevel);
   });
 
   // Liczba grup: dość slotów + dość grup, by rozdzielić graczy z wieloma postaciami.
@@ -668,6 +768,11 @@ export function generateGroups(
     }
     if (!anyPlaced) break;
   }
+
+  // Po wypełnieniu rebitkami: mniejsze grupy nadrabiają lvl/eq (padded score)
+  compensateSizeWithQuality(groups, targetLevel, maxGroupSize);
+  distributeTanks(groups, maxGroupSize);
+  fixOwnerConflicts(groups, maxGroupSize);
 
   const validGroups: GroupResult[] = [];
   const unplacedRequired: Character[] = [...stillUnplacedRequired];
