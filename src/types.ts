@@ -13,7 +13,7 @@ export interface Character {
   profession: Profession;
   level: number;
   equipQuality: number; // 1–5
-  availableFights: number; // 1 = required, >1 = optional
+  availableFights: number; // pierwsza walka zawsze obowiązkowa; >1 = rebitki
   /** Tarcza: Paladyn domyślnie true; Wojownik tylko gdy zadeklarował */
   hasShield: boolean;
 }
@@ -33,15 +33,25 @@ export interface GroupResult {
   rawAvgEquipQuality: number;
   hasTropiciel: boolean;
   hasMagOrPaladyn: boolean;
+  /** 0–1: pokrycie + równomierność (nie samo „ile unikalnych”) */
+  professionDiversity: number;
   professionCount: Partial<Record<Profession, number>>;
   bestTank: TankInfo | null;
   ownerConflicts: string[];
 }
 
+export interface RemainingFights {
+  character: Character;
+  placed: number;
+  remaining: number;
+}
+
 export interface GenerationResult {
   groups: GroupResult[];
+  /** Postacie bez ani jednej walki (krytyczne — nie powinno się zdarzać) */
   unplacedRequired: Character[];
-  unplacedOptional: Character[];
+  /** Rebitki: ile walk zostało po wygenerowanych grupach */
+  remainingFights: RemainingFights[];
 }
 
 export const PROFESSIONS: Profession[] = [

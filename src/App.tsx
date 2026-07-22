@@ -161,8 +161,8 @@ export default function App() {
         {characters.length > 0 && (
           <Grid columns={4} gap={12}>
             <Stat value={characters.length} label="Wszystkich postaci" />
-            <Stat value={requiredCount}     label="Wymaganych (1 walka)" />
-            <Stat value={optionalCount}     label="Opcjonalnych (> 1 walki)" />
+            <Stat value={requiredCount}     label="Bez rebitek (1 walka)" />
+            <Stat value={optionalCount}     label="Z rebitkami (> 1)" />
             <Stat
               value={result ? result.groups.length : '—'}
               label="Wygenerowanych grup"
@@ -310,7 +310,7 @@ export default function App() {
                     c.level,
                     `${c.equipQuality} — ${EQUIP_LABELS[c.equipQuality]}`,
                     c.availableFights === 1
-                      ? <Pill size="sm">wymagana</Pill>
+                      ? <Pill size="sm">1×</Pill>
                       : <Pill size="sm" tone="info">{c.availableFights}×</Pill>,
                     c.profession === 'Paladyn' || c.hasShield
                       ? <Pill size="sm" tone="success">tak</Pill>
@@ -331,7 +331,7 @@ export default function App() {
 
                 {characters.length < minGS && (
                   <Callout tone="info" title="Zbyt mało postaci">
-                    Potrzeba minimum {minGS} postaci wymaganych, by wygenerować grupę.
+                    Potrzeba minimum {minGS} postaci, by wygenerować grupę. Pierwsza walka każdej postaci jest obowiązkowa.
                   </Callout>
                 )}
               </Stack>
@@ -435,8 +435,13 @@ export default function App() {
                                 label={`Śr. ekwip. z pustymi (/${maxGS})`}
                               />
                               <Stat
-                                value={`${Object.keys(group.professionCount).length}/6`}
+                                value={`${(group.professionDiversity * 100).toFixed(0)}%`}
                                 label="Różnorodność profesji"
+                                tone={
+                                  group.professionDiversity >= 0.7 ? 'success'
+                                  : group.professionDiversity >= 0.45 ? 'warning'
+                                  : 'danger'
+                                }
                               />
                               <Stat
                                 value={
@@ -514,7 +519,7 @@ export default function App() {
                                 c.profession,
                                 c.level,
                                 `${c.equipQuality} — ${EQUIP_LABELS[c.equipQuality]}`,
-                                c.availableFights === 1 ? '1 (wym.)' : `${c.availableFights}×`,
+                                c.availableFights === 1 ? '1×' : `${c.availableFights}×`,
                                 c.profession === 'Paladyn' || c.hasShield
                                   ? 'tak'
                                   : c.profession === 'Wojownik'
@@ -529,39 +534,19 @@ export default function App() {
                   })
                 )}
 
-                {/* Unplaced required */}
+                {/* Zero placements — krytyczne */}
                 {result.unplacedRequired.length > 0 && (
                   <Stack gap={8}>
                     <Divider />
-                    <H2>Wymagane postacie bez grupy ({result.unplacedRequired.length})</H2>
-                    <Callout tone="warning" title="Postacie z 1 walką nieprzypisane do grupy">
+                    <H2>Postacie bez żadnej walki ({result.unplacedRequired.length})</H2>
+                    <Callout tone="warning" title="Każda zgłoszona postać powinna bić przynajmniej raz">
                       Nie znalazły się w żadnej grupie min. {minGS}-osobowej.
                     </Callout>
                     <Table
                       striped
-                      headers={['Gracz', 'Postać', 'Profesja', 'Poziom', 'Jakość ekwipunku']}
-                      columnAlign={['left', 'left', 'left', 'right', 'left']}
-                      rows={result.unplacedRequired.map(c => [
-                        c.owner, c.characterName, c.profession, c.level,
-                        `${c.equipQuality} — ${EQUIP_LABELS[c.equipQuality]}`,
-                      ])}
-                    />
-                  </Stack>
-                )}
-
-                {/* Unplaced optional */}
-                {result.unplacedOptional.length > 0 && (
-                  <Stack gap={8}>
-                    <Divider />
-                    <H2>Opcjonalne postacie bez przypisania ({result.unplacedOptional.length})</H2>
-                    <Text tone="secondary" size="small">
-                      Grupy były pełne lub limitowały daną profesję.
-                    </Text>
-                    <Table
-                      striped
                       headers={['Gracz', 'Postać', 'Profesja', 'Poziom', 'Jakość ekwipunku', 'Dostępnych walk']}
                       columnAlign={['left', 'left', 'left', 'right', 'left', 'center']}
-                      rows={result.unplacedOptional.map(c => [
+                      rows={result.unplacedRequired.map(c => [
                         c.owner, c.characterName, c.profession, c.level,
                         `${c.equipQuality} — ${EQUIP_LABELS[c.equipQuality]}`,
                         c.availableFights,
@@ -570,8 +555,35 @@ export default function App() {
                   </Stack>
                 )}
 
-                {result.unplacedRequired.length === 0 && result.unplacedOptional.length === 0 && (
-                  <Callout tone="success" title="Wszystkie postacie zostały przypisane do grup." />
+                {/* Nieużyte rebitki */}
+                {result.remainingFights.length > 0 && (
+                  <Stack gap={8}>
+                    <Divider />
+                    <H2>Niewykorzystane rebitki ({result.remainingFights.length})</H2>
+                    <Text tone="secondary" size="small">
+                      Pierwsza walka jest obowiązkowa; kolejne mogą zostać pominięte, gdy grupy są pełne lub limitują profesję.
+                    </Text>
+                    <Table
+                      striped
+                      headers={[
+                        'Gracz', 'Postać', 'Profesja', 'Poziom', 'Jakość ekwipunku',
+                        'Dostępnych', 'Zrealizowanych', 'Zostało',
+                      ]}
+                      columnAlign={['left', 'left', 'left', 'right', 'left', 'center', 'center', 'center']}
+                      rows={result.remainingFights.map(({ character: c, placed, remaining }) => [
+                        c.owner, c.characterName, c.profession, c.level,
+                        `${c.equipQuality} — ${EQUIP_LABELS[c.equipQuality]}`,
+                        c.availableFights, placed, remaining,
+                      ])}
+                    />
+                  </Stack>
+                )}
+
+                {result.unplacedRequired.length === 0 && result.remainingFights.length === 0 && (
+                  <Callout tone="success" title="Wszystkie zgłoszone walki zostały wykorzystane." />
+                )}
+                {result.unplacedRequired.length === 0 && result.remainingFights.length > 0 && (
+                  <Callout tone="info" title="Każda postać bije przynajmniej raz — część rebitek niewykorzystana (tabela powyżej)." />
                 )}
 
               </Stack>
