@@ -397,7 +397,7 @@ function buildResult(
 // ─── profession balance pass ──────────────────────────────────────────────────
 
 // Swap chars between groups to equalise per-profession counts (max diff ≤ 1).
-function balanceProfessions(groups: Character[][], characters: Character[], maxGS: number): void {
+function balanceProfessions(groups: Character[][], characters: Character[]): void {
   const profCounts: Partial<Record<Profession, number>> = {};
   for (const c of characters) profCounts[c.profession] = (profCounts[c.profession] ?? 0) + 1;
 
@@ -521,7 +521,7 @@ function tryGenerateFixed(
 
   // Phase 4: Balance levels, then equalise profession distribution
   balanceLevels(groups, maxGS);
-  balanceProfessions(groups, characters, maxGS);
+  balanceProfessions(groups, characters);
 
   // Phase 5: Add rebitki fairly
   placeRebitki(groups, characters, maxGS);
