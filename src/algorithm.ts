@@ -330,7 +330,8 @@ function rosterDisplayObjective(
   const divs = groups.map(professionDiversity);
   const minDiv = Math.min(...divs);
   const avgDiv = divs.reduce((s, x) => s + x, 0) / divs.length;
-  return min + 0.35 * avg + 0.85 * minDiv + 0.45 * avgDiv;
+  const variance = scores.reduce((s, x) => s + (x - avg) ** 2, 0) / scores.length;
+  return min + 0.35 * avg - 2.5 * variance + 0.65 * minDiv + 0.30 * avgDiv;
 }
 
 // Wyrównuj grupy po padded lvl+eq, maksymalizując objective (wysoko + równo)
@@ -926,12 +927,10 @@ export function generateGroups(
     (s, c) => s + Math.max(0, c.availableFights - 1),
     0,
   );
-  // Ile grup, żeby zmieścić WSZYSTKICH (minimum grup): ceil(n / maxGroupSize)
+  // Ile grup, żeby zmieścić WSZYSTKICH: ceil(n / maxGroupSize)
   const nGroupsFitAll = Math.ceil(characters.length / maxGroupSize);
-  // Ile grup można zapełnić do minGroupSize (maksimum pełnych grup): floor(n / minGroupSize)
-  const nGroupsFillAll = Math.floor(characters.length / minGroupSize);
-  // Dolna granica pętli: min obu — gdy nie da się zapełnić tyle grup co „fit all", próbujemy mniej
-  const nGroupsMin = Math.max(1, Math.min(nGroupsFitAll, nGroupsFillAll));
+  // Dolna granica: floor(n / maxGroupSize) — pozwala próbować mniej grup gdy n=fitAll się nie udaje
+  const nGroupsMin = Math.max(1, Math.floor(characters.length / maxGroupSize));
   const nGroupsMax = Math.max(
     nGroupsFitAll,
     Math.floor((characters.length + extraFightPool) / minGroupSize),
