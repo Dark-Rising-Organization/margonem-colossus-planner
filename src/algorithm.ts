@@ -120,7 +120,7 @@ function noOwnerIn(group: Character[], owner: string): boolean {
   return !group.some(c => c.owner === owner);
 }
 
-function fixConstraints(groups: Character[][], maxGroupSize: number, targetLevel: number): void {
+function fixConstraints(groups: Character[][], maxGroupSize: number): void {
   // 1. Remove excess Tropiciele (max 2 per group)
   for (let i = 0; i < groups.length; i++) {
     const trops = groups[i].filter(c => c.profession === 'Tropiciel');
@@ -237,7 +237,7 @@ function fixConstraints(groups: Character[][], maxGroupSize: number, targetLevel
     }
   }
   // 5. Tank distribution (Pal/Woj; Tancerz is last-resort only)
-  distributeTanks(groups, maxGroupSize, targetLevel);
+  distributeTanks(groups, maxGroupSize);
 }
 
 /**
@@ -245,7 +245,7 @@ function fixConstraints(groups: Character[][], maxGroupSize: number, targetLevel
  * Supports move + swap (full groups). Tancerz Ostrzy counts as a weak tank for "has tank"
  * display, but surplus redistribution only moves Pal/Woj from groups that have ≥2.
  */
-function distributeTanks(groups: Character[][], maxGroupSize: number, targetLevel: number): void {
+function distributeTanks(groups: Character[][], maxGroupSize: number): void {
   for (let i = 0; i < groups.length; i++) {
     if (!groups[i].length || countProperTanks(groups[i]) > 0) continue;
 
@@ -517,7 +517,7 @@ function fixOwnerConflicts(groups: Character[][], maxGroupSize: number): Charact
   return ejected;
 }
 
-function resultQuality(r: GenerationResult): [number, number, number, number] {
+function resultQuality(r: GenerationResult): [number, number, number, number, number] {
   const charsPlaced = r.groups.reduce((s, g) => s + g.members.length, 0);
   // unikalne postacie z ≥1 walką
   const uniquePlaced = new Set(r.groups.flatMap(g => g.members.map(c => c.id))).size;
@@ -616,12 +616,12 @@ function generateGroupsFixed(
   }
 
   const ejected1 = fixOwnerConflicts(groups, maxGroupSize);
-  fixConstraints(groups, maxGroupSize, targetLevel);
-  fixConstraints(groups, maxGroupSize, targetLevel);
-  fixConstraints(groups, maxGroupSize, targetLevel);
+  fixConstraints(groups, maxGroupSize);
+  fixConstraints(groups, maxGroupSize);
+  fixConstraints(groups, maxGroupSize);
   const ejected2 = fixOwnerConflicts(groups, maxGroupSize);
   balanceGroups(groups, targetLevel, maxGroupSize);
-  distributeTanks(groups, maxGroupSize, targetLevel);
+  distributeTanks(groups, maxGroupSize);
   const ejected3 = fixOwnerConflicts(groups, maxGroupSize);
 
   let pendingFirst = [
@@ -805,7 +805,7 @@ function generateGroupsFixed(
   }
 
   compensateSizeWithQuality(groups, targetLevel, maxGroupSize);
-  distributeTanks(groups, maxGroupSize, targetLevel);
+  distributeTanks(groups, maxGroupSize);
   const ejectedFinal = fixOwnerConflicts(groups, maxGroupSize);
   for (const char of ejectedFinal) {
     if (countPlacements(char.id) === 0 && !tryPlaceFirst(char)) {
