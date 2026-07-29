@@ -78,7 +78,7 @@ export default function App() {
 
   const tl   = Math.max(1, parseInt(targetLevel) || 50);
   const minGS = Math.max(2, parseInt(minGroupSize) || 6);
-  const maxGS = Math.max(minGS + 1, parseInt(maxGroupSize) || 10);
+  const maxGS = Math.max(minGS, parseInt(maxGroupSize) || 10);
 
   const addChar = () => {
     if (!fOwner.trim() || !fChar.trim()) return;

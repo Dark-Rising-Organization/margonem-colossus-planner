@@ -22,10 +22,12 @@ function hasShield(char: Character): boolean {
   return false;
 }
 
-function tankValue(char: Character): number {
-  if (char.profession === 'Paladyn') return (char.equipQuality / 5) * 1.5;
-  if (char.profession === 'Wojownik' && char.hasShield) return char.equipQuality / 5;
-  if (char.profession === 'Tancerz Ostrzy') return (char.equipQuality / 5) * 0.1;
+function tankValue(char: Character, targetLevel: number): number {
+  const lvRatio = Math.min(2, char.level / targetLevel);
+  const score = lvRatio * 0.65 + (char.equipQuality / 5) * 0.35;
+  if (char.profession === 'Paladyn') return score * 1.5;
+  if (char.profession === 'Wojownik' && char.hasShield) return score;
+  if (char.profession === 'Tancerz Ostrzy') return score * 0.1;
   return 0;
 }
 
@@ -34,17 +36,19 @@ function isProperTank(c: Character): boolean {
 }
 
 function isAnyTank(c: Character): boolean {
-  return tankValue(c) > 0;
+  return c.profession === 'Paladyn' ||
+    (c.profession === 'Wojownik' && c.hasShield) ||
+    c.profession === 'Tancerz Ostrzy';
 }
 
 function countProperTanks(group: Character[]): number {
   return group.filter(isProperTank).length;
 }
 
-function bestTankInGroup(group: Character[]): TankInfo | null {
+function bestTankInGroup(group: Character[], targetLevel: number): TankInfo | null {
   let best: TankInfo | null = null;
   for (const c of group) {
-    const tv = tankValue(c);
+    const tv = tankValue(c, targetLevel);
     if (tv > 0 && (!best || tv > best.score)) {
       best = { profession: c.profession, equipQuality: c.equipQuality, score: tv };
     }
@@ -116,7 +120,7 @@ function noOwnerIn(group: Character[], owner: string): boolean {
   return !group.some(c => c.owner === owner);
 }
 
-function fixConstraints(groups: Character[][], maxGroupSize: number): void {
+function fixConstraints(groups: Character[][], maxGroupSize: number, targetLevel: number): void {
   // 1. Remove excess Tropiciele (max 2 per group)
   for (let i = 0; i < groups.length; i++) {
     const trops = groups[i].filter(c => c.profession === 'Tropiciel');
@@ -233,7 +237,7 @@ function fixConstraints(groups: Character[][], maxGroupSize: number): void {
     }
   }
   // 5. Tank distribution (Pal/Woj; Tancerz is last-resort only)
-  distributeTanks(groups, maxGroupSize);
+  distributeTanks(groups, maxGroupSize, targetLevel);
 }
 
 /**
@@ -241,7 +245,7 @@ function fixConstraints(groups: Character[][], maxGroupSize: number): void {
  * Supports move + swap (full groups). Tancerz Ostrzy counts as a weak tank for "has tank"
  * display, but surplus redistribution only moves Pal/Woj from groups that have ≥2.
  */
-function distributeTanks(groups: Character[][], maxGroupSize: number): void {
+function distributeTanks(groups: Character[][], maxGroupSize: number, targetLevel: number): void {
   for (let i = 0; i < groups.length; i++) {
     if (!groups[i].length || countProperTanks(groups[i]) > 0) continue;
 
@@ -250,13 +254,14 @@ function distributeTanks(groups: Character[][], maxGroupSize: number): void {
     );
     if (donor < 0) continue;
 
-    // Prefer moving Wojownik so donor keeps Paladyn; among same class prefer lower level
+    // Prefer moving Wojownik so donor keeps Paladyn; among same class prefer HIGHER level
+    // (needy groups receive the strongest available tank)
     const tankCandidates = groups[donor]
       .filter(c => isProperTank(c) && noOwnerIn(groups[i], c.owner))
       .sort((a, b) => {
         if (a.profession !== b.profession)
           return a.profession === 'Wojownik' ? -1 : 1;
-        return a.level - b.level;
+        return b.level - a.level;
       });
 
     for (const tankToMove of tankCandidates) {
@@ -325,14 +330,14 @@ function rosterDisplayObjective(
   const divs = groups.map(professionDiversity);
   const minDiv = Math.min(...divs);
   const avgDiv = divs.reduce((s, x) => s + x, 0) / divs.length;
-  return min + 0.35 * avg + 0.55 * minDiv + 0.25 * avgDiv;
+  return min + 0.35 * avg + 0.85 * minDiv + 0.45 * avgDiv;
 }
 
 // Wyrównuj grupy po padded lvl+eq, maksymalizując objective (wysoko + równo)
 function balanceGroups(groups: Character[][], targetLevel: number, maxGroupSize: number): void {
   const objective = () => rosterDisplayObjective(groups, targetLevel, maxGroupSize);
 
-  for (let pass = 0; pass < 30; pass++) {
+  for (let pass = 0; pass < 60; pass++) {
     const baseline = objective();
     let bestSwap: { i: number; j: number; ci: Character; cj: Character; score: number } | null = null;
 
@@ -351,7 +356,7 @@ function balanceGroups(groups: Character[][], targetLevel: number, maxGroupSize:
             groups[i] = savedI;
             groups[j] = savedJ;
 
-            if (sc > baseline + 0.002 && (!bestSwap || sc > bestSwap.score)) {
+            if (sc > baseline + 0.001 && (!bestSwap || sc > bestSwap.score)) {
               bestSwap = { i, j, ci, cj, score: sc };
             }
           }
@@ -440,7 +445,7 @@ function compensateSizeWithQuality(
             groups[big] = savedBig;
             groups[small] = savedSmall;
 
-            if (sc > baseline + 0.002 && (!best || sc > best.score)) {
+            if (sc > baseline + 0.001 && (!best || sc > best.score)) {
               best = { from: big, to: small, strong, weak, score: sc };
             }
           }
@@ -575,7 +580,8 @@ function generateGroupsFixed(
       const candidate = (idealPos + offset) % nGroups;
       if (groups[candidate].some(c => c.owner === char.owner)) continue;
       if (groups[candidate].length >= maxGroupSize) continue;
-      if (isProperTank(char) && countProperTanks(groups[candidate]) > 0) continue;
+      // Paladyn reserves 1 slot per group; Wojownik with shield is flexible — tanks only when no Paladyn
+      if (char.profession === 'Paladyn' && groups[candidate].some(c => c.profession === 'Paladyn')) continue;
       const after = [...groups[candidate], char];
       const sc =
         professionDiversity(after) * 10 +
@@ -610,12 +616,12 @@ function generateGroupsFixed(
   }
 
   const ejected1 = fixOwnerConflicts(groups, maxGroupSize);
-  fixConstraints(groups, maxGroupSize);
-  fixConstraints(groups, maxGroupSize);
-  fixConstraints(groups, maxGroupSize);
+  fixConstraints(groups, maxGroupSize, targetLevel);
+  fixConstraints(groups, maxGroupSize, targetLevel);
+  fixConstraints(groups, maxGroupSize, targetLevel);
   const ejected2 = fixOwnerConflicts(groups, maxGroupSize);
   balanceGroups(groups, targetLevel, maxGroupSize);
-  distributeTanks(groups, maxGroupSize);
+  distributeTanks(groups, maxGroupSize, targetLevel);
   const ejected3 = fixOwnerConflicts(groups, maxGroupSize);
 
   let pendingFirst = [
@@ -799,7 +805,7 @@ function generateGroupsFixed(
   }
 
   compensateSizeWithQuality(groups, targetLevel, maxGroupSize);
-  distributeTanks(groups, maxGroupSize);
+  distributeTanks(groups, maxGroupSize, targetLevel);
   const ejectedFinal = fixOwnerConflicts(groups, maxGroupSize);
   for (const char of ejectedFinal) {
     if (countPlacements(char.id) === 0 && !tryPlaceFirst(char)) {
@@ -848,7 +854,7 @@ function generateGroupsFixed(
       const cnt = countProf(group, prof);
       if (cnt > 0) professionCount[prof] = cnt;
     }
-    const bestTank = bestTankInGroup(group);
+    const bestTank = bestTankInGroup(group, targetLevel);
     const ownerCounts: Record<string, number> = {};
     for (const c of group) ownerCounts[c.owner] = (ownerCounts[c.owner] ?? 0) + 1;
     const ownerConflicts = Object.entries(ownerCounts)
@@ -920,12 +926,17 @@ export function generateGroups(
     (s, c) => s + Math.max(0, c.availableFights - 1),
     0,
   );
-  const nGroupsMin = Math.max(1, Math.ceil(characters.length / maxGroupSize));
+  // Ile grup, żeby zmieścić WSZYSTKICH (minimum grup): ceil(n / maxGroupSize)
+  const nGroupsFitAll = Math.ceil(characters.length / maxGroupSize);
+  // Ile grup można zapełnić do minGroupSize (maksimum pełnych grup): floor(n / minGroupSize)
+  const nGroupsFillAll = Math.floor(characters.length / minGroupSize);
+  // Dolna granica pętli: min obu — gdy nie da się zapełnić tyle grup co „fit all", próbujemy mniej
+  const nGroupsMin = Math.max(1, Math.min(nGroupsFitAll, nGroupsFillAll));
   const nGroupsMax = Math.max(
-    nGroupsMin,
+    nGroupsFitAll,
     Math.floor((characters.length + extraFightPool) / minGroupSize),
   );
-  const nGroupsStart = Math.min(nGroupsMax, Math.max(nGroupsMin, maxOwnerFights));
+  const nGroupsStart = Math.min(nGroupsMax, Math.max(nGroupsFitAll, maxOwnerFights));
 
   // Od max w dół — wybierz wariant z największą liczbą bijących postaci (przy zachowaniu kryteriów)
   let best: GenerationResult | null = null;
